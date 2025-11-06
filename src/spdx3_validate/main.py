@@ -158,6 +158,7 @@ def iter_validation_errors(err):
 
 def print_schema_error(err, filename, indent=0):
     """Print a JSON Schema validation error."""
+
     def print_err(e, indent, fn=None, message=False):
         loc = e.json_path
         if fn:

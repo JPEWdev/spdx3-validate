@@ -16,7 +16,9 @@ SpdxVersion = namedtuple(
 
 def get_3_0_0_imports(graph):
     """Get imported SPDX IDs from an SPDX 3.0.0 graph."""
-    RDF_BASE = URIRef("https://spdx.org/rdf/3.0.0/terms/")  # pylint: disable=invalid-name
+    RDF_BASE = URIRef(
+        "https://spdx.org/rdf/3.0.0/terms/"
+    )  # pylint: disable=invalid-name
 
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
         for i in graph.objects(doc, RDF_BASE + "Core/imports"):
@@ -25,7 +27,9 @@ def get_3_0_0_imports(graph):
 
 def get_3_0_1_imports(graph):
     """Get imported SPDX IDs from an SPDX 3.0.1 graph."""
-    RDF_BASE = URIRef("https://spdx.org/rdf/3.0.1/terms/")  # pylint: disable=invalid-name
+    RDF_BASE = URIRef(
+        "https://spdx.org/rdf/3.0.1/terms/"
+    )  # pylint: disable=invalid-name
 
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
         for i in graph.objects(doc, RDF_BASE + "Core/import"):
