@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: MIT
 
+"""SPDX versions and related utilities."""
+
 from collections import namedtuple
 
 from rdflib import RDF, URIRef
-
 
 SpdxVersion = namedtuple(
     "SpdxVersion",
@@ -14,21 +15,21 @@ SpdxVersion = namedtuple(
 
 
 def get_3_0_0_imports(graph):
-    RDF_BASE = URIRef("https://spdx.org/rdf/3.0.0/terms/")
+    """Get imported SPDX IDs from an SPDX 3.0.0 graph."""
+    RDF_BASE = URIRef("https://spdx.org/rdf/3.0.0/terms/")  # pylint: disable=invalid-name
 
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
         for i in graph.objects(doc, RDF_BASE + "Core/imports"):
-            for spdxid in graph.objects(i, RDF_BASE + "Core/externalSpdxId"):
-                yield spdxid
+            yield from graph.objects(i, RDF_BASE + "Core/externalSpdxId")
 
 
 def get_3_0_1_imports(graph):
-    RDF_BASE = URIRef("https://spdx.org/rdf/3.0.1/terms/")
+    """Get imported SPDX IDs from an SPDX 3.0.1 graph."""
+    RDF_BASE = URIRef("https://spdx.org/rdf/3.0.1/terms/")  # pylint: disable=invalid-name
 
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
         for i in graph.objects(doc, RDF_BASE + "Core/import"):
-            for spdxid in graph.objects(i, RDF_BASE + "Core/externalSpdxId"):
-                yield spdxid
+            yield from graph.objects(i, RDF_BASE + "Core/externalSpdxId")
 
 
 SPDX_VERSIONS = (
@@ -52,6 +53,7 @@ SPDX_VERSIONS = (
 
 
 def find_version(context_url):
+    """Find an SPDX version by its context URL."""
     for s in SPDX_VERSIONS:
         if s.context_url == context_url:
             return s

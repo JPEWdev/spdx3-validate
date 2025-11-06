@@ -2,35 +2,41 @@
 #
 # SPDX-License-Identifier: MIT
 
+"""Main module for SPDX 3 validation tool."""
+
 import argparse
-import halo
 import json
+import urllib.request
+import sys
+import textwrap
+
+from pathlib import Path
+
+import halo
 import jsonschema
 import pyshacl
 import rdflib
-import sys
-import textwrap
-import urllib.request
 
 from rdflib import RDF, RDFS, SH, URIRef
 
-from pathlib import Path
 from .version import VERSION
 from .spdx_versions import find_version, SPDX_VERSIONS
 
 
 def read_location(location):
+    """Read a file from a location."""
     if "://" in location:
         with urllib.request.urlopen(location) as f:
             return f.read()
     elif location == "-":
         return sys.stdin.read()
     else:
-        with Path(location).open("r") as f:
+        with Path(location).open("r", encoding="utf-8") as f:
             return f.read()
 
 
 def derives_from(cls, target, shacl_graph):
+    """Check if a class derives from another class."""
     if cls == target:
         return True
 
@@ -42,6 +48,7 @@ def derives_from(cls, target, shacl_graph):
 
 
 def check_graph(graph, shacl_graph, current_version, error_external):
+    """Check a graph against SHACL shapes."""
     errors = []
 
     conforms, results, _ = pyshacl.validate(
@@ -77,11 +84,6 @@ def check_graph(graph, shacl_graph, current_version, error_external):
                 external_spdxids.add(str(spdxid))
 
         def check_external_ref_error(r):
-            nonlocal results
-            nonlocal shacl_graph
-            nonlocal graph
-            nonlocal external_spdxids
-
             if (r, RDF.type, SH.ValidationResult) not in results:
                 return False
 
@@ -147,6 +149,7 @@ def check_graph(graph, shacl_graph, current_version, error_external):
 
 
 def iter_validation_errors(err):
+    """Iterate over all validation errors."""
     if err.context:
         for e in err.context:
             yield e
@@ -154,6 +157,7 @@ def iter_validation_errors(err):
 
 
 def print_schema_error(err, filename, indent=0):
+    """Print a JSON Schema validation error."""
     def print_err(e, indent, fn=None, message=False):
         loc = e.json_path
         if fn:
@@ -194,6 +198,7 @@ def print_schema_error(err, filename, indent=0):
 
 
 def main(cmdline_args=None):
+    """Main entry point for SPDX 3 validation tool."""
     parser = argparse.ArgumentParser(
         description=f"Validate SPDX 3 files Version {VERSION}"
     )
@@ -264,7 +269,8 @@ def main(cmdline_args=None):
             elif current_version != version:
                 spinner.fail()
                 print(
-                    f"{j} has incompatible version {version.pretty}. Other documents are {current_version.pretty}"
+                    f"{j} has incompatible version {version.pretty}. "
+                    f"Other documents are {current_version.pretty}"
                 )
                 return 1
 
@@ -311,20 +317,20 @@ def main(cmdline_args=None):
 
         if json_errors:
             print(f"ERROR: JSON Schema validation failed for {fn}:")
-            for e in json_errors:
-                print_schema_error(e, fn)
+            for err in json_errors:
+                print_schema_error(err, fn)
                 errors += 1
 
         with halo.Halo(f"Checking SHACL for {fn}", enabled=not args.quiet) as spinner:
-            e = check_graph(g, shacl_graph, current_version, True)
-            if e:
+            err = check_graph(g, shacl_graph, current_version, True)
+            if err:
                 spinner.fail()
             else:
                 spinner.succeed()
 
-        if e:
+        if err:
             print(f"ERROR: SHACL Validation failed for {fn}:")
-            print("\n".join(e))
+            print("\n".join(err))
             errors += 1
 
     if len(files) > 1 and args.check_merged:
@@ -334,15 +340,15 @@ def main(cmdline_args=None):
                 for _, _, g in files:
                     merged_g += g
 
-                e = check_graph(g, shacl_graph, current_version, False)
-                if e:
+                err = check_graph(g, shacl_graph, current_version, False)
+                if err:
                     spinner.fail()
                 else:
                     spinner.succeed()
 
-            if e:
+            if err:
                 print("ERROR: SHACL Validation failed on merged files:")
-                print("\n".join(e))
+                print("\n".join(err))
                 errors += 1
         else:
             print(
