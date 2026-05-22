@@ -243,9 +243,13 @@ def main(cmdline_args=None):
     else:
         current_version = None
 
+    return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
+
+def spdx3validate(json_files, current_version = "3.0.1", check_merged = False, quiet = True):
+
     files = []
-    for j in args.json:
-        with halo.Halo(f"Loading {j}", enabled=not args.quiet) as spinner:
+    for j in json_files:
+        with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             s = read_location(j)
             d = json.loads(s)
             if "@context" not in d:
@@ -279,7 +283,7 @@ def main(cmdline_args=None):
         return 0
 
     with halo.Halo(
-        f"Loading SPDX {current_version.pretty}", enabled=not args.quiet
+        f"Loading SPDX {current_version.pretty}", enabled=not quiet
     ) as spinner:
         with urllib.request.urlopen(current_version.schema_url) as f:
             schema = json.load(f)
@@ -292,7 +296,7 @@ def main(cmdline_args=None):
 
     for fn, json_data, g in files:
         with halo.Halo(
-            f"Validating schema for {fn}", enabled=not args.quiet
+            f"Validating schema for {fn}", enabled=not quiet
         ) as spinner:
             validator_cls = jsonschema.validators.validator_for(schema)
 
@@ -315,7 +319,7 @@ def main(cmdline_args=None):
                 print_schema_error(e, fn)
                 errors += 1
 
-        with halo.Halo(f"Checking SHACL for {fn}", enabled=not args.quiet) as spinner:
+        with halo.Halo(f"Checking SHACL for {fn}", enabled=not quiet) as spinner:
             e = check_graph(g, shacl_graph, current_version, True)
             if e:
                 spinner.fail()
@@ -327,9 +331,9 @@ def main(cmdline_args=None):
             print("\n".join(e))
             errors += 1
 
-    if len(files) > 1 and args.check_merged:
+    if len(files) > 1 and check_merged:
         if not errors:
-            with halo.Halo("Checking merged graph", enabled=not args.quiet) as spinner:
+            with halo.Halo("Checking merged graph", enabled=not quiet) as spinner:
                 merged_g = rdflib.Graph()
                 for _, _, g in files:
                     merged_g += g
