@@ -77,11 +77,6 @@ def check_graph(graph, shacl_graph, current_version, error_external):
                 external_spdxids.add(str(spdxid))
 
         def check_external_ref_error(r):
-            nonlocal results
-            nonlocal shacl_graph
-            nonlocal graph
-            nonlocal external_spdxids
-
             if (r, RDF.type, SH.ValidationResult) not in results:
                 return False
 
@@ -247,7 +242,6 @@ def main(cmdline_args=None):
 
 
 def spdx3validate(json_files, current_version="3.0.1", check_merged=False, quiet=True):
-
     files = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
