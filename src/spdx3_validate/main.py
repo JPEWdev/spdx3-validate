@@ -245,7 +245,8 @@ def main(cmdline_args=None):
 
     return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
 
-def spdx3validate(json_files, current_version = "3.0.1", check_merged = False, quiet = True):
+
+def spdx3validate(json_files, current_version="3.0.1", check_merged=False, quiet=True):
 
     files = []
     for j in json_files:
@@ -295,9 +296,7 @@ def spdx3validate(json_files, current_version = "3.0.1", check_merged = False, q
     errors = 0
 
     for fn, json_data, g in files:
-        with halo.Halo(
-            f"Validating schema for {fn}", enabled=not quiet
-        ) as spinner:
+        with halo.Halo(f"Validating schema for {fn}", enabled=not quiet) as spinner:
             validator_cls = jsonschema.validators.validator_for(schema)
 
             try:

@@ -6,7 +6,6 @@ from collections import namedtuple
 
 from rdflib import RDF, URIRef
 
-
 SpdxVersion = namedtuple(
     "SpdxVersion",
     ["context_url", "shacl_url", "schema_url", "pretty", "rdf_base", "get_imports"],
