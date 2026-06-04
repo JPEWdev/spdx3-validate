@@ -229,11 +229,11 @@ def main(cmdline_args=None):
 
     if args.spdx_version != "auto":
         for v in SPDX_VERSIONS:
-            if v.pretty == args.version:
+            if v.pretty == args.spdx_version:
                 current_version = v
                 break
         else:
-            print(f"Unknown SPDX version {args.version}")
+            print(f"Unknown SPDX version {args.spdx_version}")
             return 1
     else:
         current_version = None
@@ -241,7 +241,7 @@ def main(cmdline_args=None):
     return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
 
 
-def spdx3validate(json_files, current_version="3.0.1", check_merged=False, quiet=True):
+def spdx3validate(json_files, current_version=None, check_merged=False, quiet=True):
     files = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
