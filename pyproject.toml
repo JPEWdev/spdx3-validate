@@ -41,7 +41,7 @@ Repository = "https://github.com/JPEWdev/spdx3-validate.git"
 Issues = "https://github.com/JPEWdev/spdx3-validate/issues"
 
 [project.scripts]
-spdx3-validate = "spdx3_validate:main"
+spdx3-validate = "spdx3_validate.main:main"
 
 [build-system]
 requires = ["hatchling"]
