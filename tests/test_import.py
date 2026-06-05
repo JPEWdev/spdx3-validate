@@ -6,8 +6,6 @@
 
 import re
 
-import pytest
-
 import spdx3_validate
 
 
