@@ -24,6 +24,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +41,7 @@ Repository = "https://github.com/JPEWdev/spdx3-validate.git"
 Issues = "https://github.com/JPEWdev/spdx3-validate/issues"
 
 [project.scripts]
-spdx3-validate = "spdx3_validate:main"
+spdx3-validate = "spdx3_validate.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -49,9 +51,10 @@ build-backend = "hatchling.build"
 path = "src/spdx3_validate/version.py"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 addopts = [
     "--import-mode=importlib",
-    "--cov=shacl2code",
+    "--cov=spdx3_validate",
 ]
 
 [tool.coverage.run]
