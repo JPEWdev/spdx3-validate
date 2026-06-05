@@ -12,7 +12,7 @@ import pytest
 
 import spdx3_validate
 
-FIXTURES = Path(__file__).parent / "fixtures"
+DATA_DIR = Path(__file__).parent / "data"
 
 
 def test_public_api_is_importable():
@@ -27,9 +27,9 @@ def test_spdx3validate_is_callable():
     assert spdx3_validate.spdx3validate([]) == 0
 
 
-def test_spdx3validate_valid_document():
+def test_spdx3validate_valid():
     """A known-valid SPDX 3.0.1 document validates successfully."""
-    doc_path = FIXTURES / "v3_0_1" / "valid" / "package_sbom.json"
+    doc_path = DATA_DIR / "3.0.1" / "valid" / "package_sbom.json"
     try:
         rc = spdx3_validate.spdx3validate([str(doc_path)])
     except urllib.error.URLError as e:
