@@ -29,7 +29,7 @@ def test_spdx3validate_is_callable():
 
 def test_spdx3validate_valid_document():
     """A known-valid SPDX 3.0.1 document validates successfully."""
-    doc_path = FIXTURES / "3.0.1" / "valid" / "package_sbom.json"
+    doc_path = FIXTURES / "v3_0_1" / "valid" / "package_sbom.json"
     try:
         rc = spdx3_validate.spdx3validate([str(doc_path)])
     except urllib.error.URLError as e:
