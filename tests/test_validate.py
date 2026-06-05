@@ -38,4 +38,3 @@ def test_spdx3validate_valid():
     except urllib.error.URLError as e:
         pytest.skip(f"network unavailable: {e}")
     assert rc == 0
-
