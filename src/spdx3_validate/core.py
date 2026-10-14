@@ -16,11 +16,15 @@ top of these primitives.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import textwrap
 import urllib.request
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from types import FrameType
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import jsonschema
 import pyshacl
@@ -30,6 +34,10 @@ from rdflib.term import Node
 
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion, find_version
 
+# One location, or a list of them (only the first is used so far).
+_PathLike = Union[str, "os.PathLike[str]"]
+_Locations = Union[_PathLike, Sequence[_PathLike], None]
+
 
 class SpdxValidateError(Exception):
     """Base class for errors raised while loading or validating documents."""
@@ -37,6 +45,10 @@ class SpdxValidateError(Exception):
 
 class UnknownVersionError(SpdxValidateError):
     """The requested SPDX version, or a document's ``@context``, is unknown."""
+
+
+class ResourceNotFoundError(SpdxValidateError, FileNotFoundError):
+    """A required document, schema, shape, or context could not be found or read."""
 
 
 @dataclass
@@ -79,11 +91,94 @@ def _resolve_version(
 def read_location(location: str) -> str:
     """Read the contents of a path or an URL."""
     if "://" in location:
-        with urllib.request.urlopen(location) as f:
-            content: bytes = f.read()
-            return content.decode("utf-8")
-    with Path(location).open("r", encoding="utf-8") as f:
-        return f.read()
+        try:
+            with urllib.request.urlopen(location) as f:
+                content: bytes = f.read()
+                return content.decode("utf-8")
+        except (OSError, ValueError) as e:  # ValueError: malformed URL, not UTF-8
+            raise ResourceNotFoundError(f"Failed to read URL {location}: {e}") from e
+    try:
+        with Path(location).open("r", encoding="utf-8-sig") as f:
+            return f.read()
+    except FileNotFoundError as e:
+        raise ResourceNotFoundError(f"File not found: {location}") from e
+    except OSError as e:
+        raise ResourceNotFoundError(f"Failed to read {location}: {e}") from e
+    except ValueError as e:  # not UTF-8
+        raise SpdxValidateError(f"Cannot decode {location}: {e}") from e
+
+
+def _read_failure(kind: str, location: str, err: Exception) -> ResourceNotFoundError:
+    return ResourceNotFoundError(f"Failed to read {kind} {location}: {err}")
+
+
+def _read_json(location: str, kind: str) -> Any:
+    """Read JSON from a path or URL; failures raise ResourceNotFoundError."""
+    try:
+        if "://" in location:
+            with urllib.request.urlopen(location) as f:
+                raw: bytes = f.read()
+        else:
+            with open(location, "rb") as f:
+                raw = f.read()
+    except (OSError, ValueError) as e:  # ValueError: malformed URL
+        raise _read_failure(kind, location, e) from e
+    try:
+        return json.loads(raw)
+    except ValueError as e:  # malformed JSON or not UTF-8
+        raise SpdxValidateError(f"Invalid JSON in {kind} {location}: {e}") from e
+
+
+def _check_context_matches(
+    graph: rdflib.Graph,
+    data: Dict[str, Any],
+    version: SpdxVersion,
+    source: str,
+    location: str,
+) -> None:
+    """Fail if an override context leaves a document without SPDX terms.
+
+    A context for another version, or one that maps no SPDX terms, would leave
+    SHACL with nothing to check, so the document would pass unvalidated.
+    """
+    has_content = bool(data.get("@graph")) or any(
+        k not in ("@context", "@graph") for k in data
+    )
+    # Any type or property in the version's namespace shows the context fits.
+    iris = {str(t) for t in graph.objects(None, RDF.type)}
+    iris.update(str(p) for p in graph.predicates())
+    if has_content and not any(i.startswith(version.rdf_base) for i in iris):
+        raise SpdxValidateError(
+            f"Context {location} does not match SPDX {version.pretty}: "
+            f"{source} has nothing in {version.rdf_base}"
+        )
+
+
+def _warn_unsupported(message: str) -> None:
+    """Warn, attributed to the first caller outside this package."""
+    level = 2
+    frame: Optional[FrameType] = sys._getframe(1)
+    pkg = __package__ or "spdx3_validate"
+    while (
+        frame is not None and str(frame.f_globals.get("__name__")).split(".")[0] == pkg
+    ):
+        frame, level = frame.f_back, level + 1
+    warnings.warn(message, UserWarning, stacklevel=level)
+
+
+def _first_location(urls: _Locations, name: str) -> Optional[List[str]]:
+    """Normalise *urls* to a list of strings, keeping only the first entry."""
+    if urls is None:
+        return None
+    items = [urls] if isinstance(urls, (str, os.PathLike)) else list(urls)
+    paths = [os.fspath(u) for u in items]
+    if len(paths) > 1:
+        _warn_unsupported(
+            f"Multiple {name} locations are not supported yet; "
+            f"only the first one is used: {paths[0]}"
+        )
+        return paths[:1]
+    return paths
 
 
 @dataclass
@@ -105,29 +200,63 @@ class Document:
     version: SpdxVersion
 
     @classmethod
-    def load(cls, source: str) -> Document:
+    def load(
+        cls,
+        source: _PathLike,
+        *,
+        context_urls: _Locations = None,
+        model_dir: Optional[str] = None,
+    ) -> Document:
         """Load and parse an SPDX 3 document from a path or URL.
 
         Raises:
             SpdxValidateError: The document has no ``@context``.
             UnknownVersionError: The ``@context`` is not a known SPDX version.
+            ResourceNotFoundError: The input document file or local context
+                file does not exist.
         """
-        return cls.from_text(source, read_location(source))
+        source = os.fspath(source)
+        return cls.from_text(
+            source,
+            read_location(source),
+            context_urls=context_urls,
+            model_dir=model_dir,
+        )
 
     @classmethod
-    def from_text(cls, source: str, text: str) -> Document:
+    def from_text(
+        cls,
+        source: str,
+        text: str,
+        *,
+        context_urls: _Locations = None,
+        model_dir: Optional[str] = None,
+    ) -> Document:
         """Parse an SPDX 3 document already held in memory.
 
         Args:
             source: A label identifying the document (e.g. a filename), used
                 only to attribute errors to it.
             text: The raw JSON-LD document content.
+            context_urls: Optional list of local file paths or URLs for
+                @context.
+            model_dir: Optional model directory containing
+                v[VERSION]/spdx-context.jsonld.
 
         Raises:
-            SpdxValidateError: The document has no ``@context``.
+            SpdxValidateError: The document is not valid JSON or has no
+                ``@context``, a context is malformed, or an override context
+                does not match the document's SPDX version.
             UnknownVersionError: The ``@context`` is not a known SPDX version.
+            ResourceNotFoundError: A specified context file does not exist or
+                cannot be read.
         """
-        data = json.loads(text)
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            raise SpdxValidateError(f"Invalid JSON in {source}: {e}") from e
+        if not isinstance(data, dict):
+            raise SpdxValidateError(f"{source} is not a JSON object")
 
         if "@context" not in data:
             raise SpdxValidateError(f"No @context found in {source}")
@@ -138,23 +267,157 @@ class Document:
                 f"{source} has unknown version @context {data['@context']}"
             )
 
+        context_urls = _first_location(context_urls, "context")
+        actual_context_url: Optional[str] = None
+        if context_urls:
+            actual_context_url = context_urls[0]
+            if ("://" not in actual_context_url) and (
+                not Path(actual_context_url).is_file()
+            ):
+                raise ResourceNotFoundError(
+                    f"Specified context file does not exist: {actual_context_url}"
+                )
+        elif model_dir:
+            target_path = Path(model_dir) / f"v{version.pretty}" / "spdx-context.jsonld"
+            if not target_path.is_file():
+                raise ResourceNotFoundError(
+                    f"JSON-LD context file {target_path.name} not found "
+                    f"in model directory at {target_path}"
+                )
+            actual_context_url = str(target_path)
+
         graph = rdflib.Graph()
-        graph.parse(data=text, format="json-ld")
+        if actual_context_url:
+            ctx_obj = _read_json(actual_context_url, "@context")
+            if not isinstance(ctx_obj, dict):
+                raise SpdxValidateError(
+                    f"Context {actual_context_url} must be a JSON object"
+                )
+
+            ctx_data = dict(data)  # only @context is replaced
+            if "@context" in ctx_obj:
+                ctx_data["@context"] = ctx_obj["@context"]
+            else:
+                ctx_data["@context"] = ctx_obj
+            parse_text = json.dumps(ctx_data)
+        else:
+            parse_text = text
+        try:
+            graph.parse(data=parse_text, format="json-ld")
+        except OSError as e:  # rdflib fetches remote contexts itself
+            label = actual_context_url or str(data["@context"])
+            raise _read_failure("@context", label, e) from e
+        except Exception as e:  # e.g. a malformed @context value
+            raise SpdxValidateError(f"Cannot parse {source}: {e}") from e
+        if actual_context_url:
+            _check_context_matches(graph, data, version, source, actual_context_url)
 
         return cls(source, data, graph, version)
 
 
-def load_validation_data(version: SpdxVersion) -> Tuple[Dict[str, Any], rdflib.Graph]:
-    """Download the JSON Schema and SHACL model for an SPDX *version*.
+def _schema_location(
+    version: SpdxVersion, schema_urls: Optional[List[str]], model_dir: Optional[str]
+) -> str:
+    """Where the schema comes from: explicit > model_dir > network default."""
+    if schema_urls:
+        location = schema_urls[0]
+        if "://" not in location and not Path(location).is_file():
+            raise ResourceNotFoundError(
+                f"Specified schema file does not exist: {location}"
+            )
+        return location
+    if model_dir:
+        target_path = Path(model_dir) / f"v{version.pretty}" / "spdx-json-schema.json"
+        if not target_path.is_file():
+            raise ResourceNotFoundError(
+                f"Schema file {target_path.name} not found in "
+                f"model directory at {target_path}"
+            )
+        return str(target_path)
+    return version.schema_url
+
+
+def _shapes_location(
+    version: SpdxVersion, shacl_urls: Optional[List[str]], model_dir: Optional[str]
+) -> str:
+    """Where the SHACL shapes come from: explicit > model_dir > network default."""
+    if shacl_urls:
+        location = shacl_urls[0]
+        if "://" not in location and not Path(location).is_file():
+            raise ResourceNotFoundError(
+                f"Specified shapes file does not exist: {location}"
+            )
+        return location
+    if model_dir:
+        target_path = Path(model_dir) / f"v{version.pretty}" / "spdx-model.ttl"
+        if not target_path.is_file():
+            raise ResourceNotFoundError(
+                f"SHACL shapes file {target_path.name} not found in "
+                f"model directory at {target_path}"
+            )
+        return str(target_path)
+    return version.shacl_url
+
+
+def load_validation_data(
+    version: SpdxVersion,
+    *,
+    schema_urls: _Locations = None,
+    shacl_urls: _Locations = None,
+    model_dir: Optional[str] = None,
+) -> Tuple[Dict[str, Any], rdflib.Graph]:
+    """Load the JSON Schema and SHACL model for an SPDX *version*.
+
+    Resolution precedence for each resource:
+    explicit parameter (`schema_urls` / `shacl_urls`) > `model_dir`
+    > network default.
+
+    Args:
+        version: The SPDX version to load models for.
+        schema_urls: Optional list of local file paths or URLs for JSON Schema.
+            Takes precedence over `model_dir`.
+        shacl_urls: Optional list of local file paths or URLs for SHACL shapes.
+            Takes precedence over `model_dir`.
+        model_dir: Optional directory containing versioned models (v[VERSION]/).
+            Used if explicit resource lists are omitted.
 
     Returns a ``(schema, shacl_graph)`` tuple.
+
+    Raises:
+        ResourceNotFoundError: A specified or expected schema or SHACL file
+            does not exist or cannot be read.
+        SpdxValidateError: The schema or shapes are malformed.
     """
-    with urllib.request.urlopen(version.schema_url) as f:
-        schema = json.load(f)
+    schema_urls = _first_location(schema_urls, "schema")
+    shacl_urls = _first_location(shacl_urls, "shapes")
+    actual_schema_url = _schema_location(version, schema_urls, model_dir)
+    actual_shacl_url = _shapes_location(version, shacl_urls, model_dir)
+
+    schema = _read_json(actual_schema_url, "schema")
+    if not isinstance(schema, dict):
+        raise SpdxValidateError(f"Schema {actual_schema_url} must be a JSON object")
+    if not schema:
+        _warn_unsupported(f"Schema {actual_schema_url} is empty; it accepts anything")
 
     shacl_graph = rdflib.Graph()
-    shacl_graph.parse(version.shacl_url)
+    try:
+        shacl_graph.parse(actual_shacl_url)
+    except OSError as e:
+        raise _read_failure("shapes", actual_shacl_url, e) from e
+    except Exception as e:  # rdflib raises many parser-specific errors
+        raise SpdxValidateError(f"Invalid shapes {actual_shacl_url}: {e}") from e
 
+    if not len(shacl_graph):
+        _warn_unsupported(f"Shapes {actual_shacl_url} are empty; nothing is checked")
+    elif not any(
+        str(c).startswith(version.rdf_base)
+        for c in set(shacl_graph.objects(None, SH.targetClass))
+        | set(shacl_graph.subjects(RDF.type, SH.NodeShape))  # implicit targets
+    ):
+        _warn_unsupported(
+            f"Shapes {actual_shacl_url} target no classes in {version.rdf_base}; "
+            f"SPDX {version.pretty} documents may not be checked"
+        )
     return schema, shacl_graph
 
 
@@ -171,6 +434,18 @@ def schema_validator(schema: Dict[str, Any]) -> jsonschema.protocols.Validator:
     # cast() is flagged "redundant" in environments where this is already typed.
     validator: jsonschema.protocols.Validator = validator_cls(schema)
     return validator
+
+
+def schema_errors(
+    validator: jsonschema.protocols.Validator, data: Any
+) -> List[jsonschema.exceptions.ValidationError]:
+    """Run *validator* on *data*; an unresolvable ``$ref`` raises SpdxValidateError."""
+    try:
+        return list(validator.iter_errors(data))
+    except jsonschema.exceptions.ValidationError:
+        raise
+    except Exception as e:  # e.g. unresolvable $ref
+        raise SpdxValidateError(f"Invalid schema: {e}") from e
 
 
 def _schema_error(
@@ -213,11 +488,16 @@ def check_graph(
     # pyshacl.validate() has no return type annotation, so its result is
     # typed here via annotation to restore type checking for the rest of
     # this function.
-    validate_result: Tuple[bool, rdflib.Graph, str] = pyshacl.validate(
-        graph,
-        shacl_graph=shacl_graph,
-        ont_graph=shacl_graph,
-    )
+    try:
+        validate_result: Tuple[bool, rdflib.Graph, str] = pyshacl.validate(
+            graph,
+            shacl_graph=shacl_graph,
+            ont_graph=shacl_graph,
+        )
+    except pyshacl.errors.ReportableRuntimeError as err:  # malformed shapes
+        raise SpdxValidateError(f"Invalid shapes: {err.message}") from err
+    except Exception as err:  # e.g. re.error from a bad sh:pattern
+        raise SpdxValidateError(f"Invalid shapes: {err}") from err
     conforms, results, _ = validate_result
 
     if not conforms:
@@ -225,7 +505,8 @@ def check_graph(
         nm = rdflib.namespace.NamespaceManager(results)
 
         def norm(uri: Optional[Node]) -> str:
-            assert uri is not None
+            if uri is None:
+                return "-"
             return nm.normalizeUri(str(uri))
 
         def pnode(n: Optional[Node]) -> str:
@@ -339,12 +620,20 @@ class ValidationResult:
 
 
 def validate(
-    sources: Union[str, Iterable[str]],
+    sources: Union[_PathLike, Iterable[_PathLike]],
     *,
     version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
+    schema_urls: _Locations = None,
+    shacl_urls: _Locations = None,
+    context_urls: _Locations = None,
+    model_dir: Optional[str] = None,
 ) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
+
+    Resolution precedence for each resource (`schema`, `shapes`, `context`):
+    explicit list (`schema_urls`, `shacl_urls`, `context_urls`)
+    > `model_dir` > network default.
 
     Args:
         sources: A single path or URL, or an iterable of them.
@@ -354,6 +643,14 @@ def validate(
         check_merged: Also validate the graph formed by merging every document,
             which catches type errors across ``ExternalMap`` references. Skipped
             if any document already failed.
+        schema_urls: Optional list of local file paths or URLs for JSON Schema.
+            Takes precedence over `model_dir`.
+        shacl_urls: Optional list of local file paths or URLs for SHACL shapes.
+            Takes precedence over `model_dir`.
+        context_urls: Optional list of local file paths or URLs for JSON-LD
+            @context. Takes precedence over `model_dir`.
+        model_dir: Optional directory containing versioned models (v[VERSION]/).
+            Used for any resources not explicitly overridden above.
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
@@ -363,15 +660,24 @@ def validate(
         SpdxValidateError: A document cannot be loaded, or documents declare
             incompatible versions.
         UnknownVersionError: *version* or a document ``@context`` is unknown.
+        ResourceNotFoundError: A specified or expected model/context file does
+            not exist.
     """
-    if isinstance(sources, str):
+    if isinstance(sources, (str, os.PathLike)):
         sources = [sources]
 
     resolved_version = _resolve_version(version)
+    schema_urls = _first_location(schema_urls, "schema")
+    shacl_urls = _first_location(shacl_urls, "shapes")
+    context_urls = _first_location(context_urls, "context")
 
     documents: List[Document] = []
     for source in sources:
-        doc = Document.load(source)
+        doc = Document.load(
+            source,
+            context_urls=context_urls,
+            model_dir=model_dir,
+        )
         if resolved_version is None:
             resolved_version = doc.version
         elif doc.version != resolved_version:
@@ -384,22 +690,26 @@ def validate(
     if not documents:
         return ValidationResult()
 
-    # documents is non-empty, so the loop above set resolved_version at least once.
-    assert resolved_version is not None
+    if resolved_version is None:
+        raise SpdxValidateError("Unable to determine SPDX version")
 
-    schema, shacl_graph = load_validation_data(resolved_version)
+    schema, shacl_graph = load_validation_data(
+        resolved_version,
+        schema_urls=schema_urls,
+        shacl_urls=shacl_urls,
+        model_dir=model_dir,
+    )
 
     try:
         validator = schema_validator(schema)
     except jsonschema.exceptions.SchemaError as e:
-        raise SpdxValidateError(
-            f"Invalid schema {resolved_version.schema_url}: {e}"
-        ) from e
+        location = _schema_location(resolved_version, schema_urls, model_dir)
+        raise SpdxValidateError(f"Invalid schema {location}: {e}") from e
 
     errors: List[ValidationError] = []
     for doc in documents:
         errors.extend(
-            _schema_error(doc.source, e) for e in validator.iter_errors(doc.data)
+            _schema_error(doc.source, e) for e in schema_errors(validator, doc.data)
         )
         errors.extend(
             ValidationError(doc.source, "shacl", msg)

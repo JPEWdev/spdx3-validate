@@ -6,6 +6,7 @@
 
 from .core import (
     Document,
+    ResourceNotFoundError,
     SpdxValidateError,
     UnknownVersionError,
     ValidationError,
@@ -16,12 +17,13 @@ from .main import spdx3validate
 from .version import VERSION as __version__
 
 __all__ = [
-    "__version__",
-    "validate",
-    "ValidationResult",
-    "ValidationError",
     "Document",
+    "ResourceNotFoundError",
     "SpdxValidateError",
     "UnknownVersionError",
+    "ValidationError",
+    "ValidationResult",
+    "__version__",
     "spdx3validate",
+    "validate",
 ]
