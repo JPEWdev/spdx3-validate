@@ -1,12 +1,15 @@
 # SPDX-FileContributor: Joshua Watt
-# SPDX-FileCopyrightText: 2024 Joshua Watt
+# SPDX-FileContributor: Arthit Suriyawongkul
+# SPDX-FileCopyrightText: 2024-2026 Joshua Watt
 # SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import warnings
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import halo
@@ -18,23 +21,19 @@ from .spdx_versions import SPDX_VERSIONS, SpdxVersion
 from .core import (
     Document,
     SpdxValidateError,
+    _Locations,
     UnknownVersionError,
-    check_graph,
-    load_validation_data,
-    schema_validator,
+    PreReleaseWarning,
+    Validator,
     _resolve_version,
 )
 
 
-def load_cli_document(source: str) -> Document:
-    """Load a document from a path, URL, or ``"-"`` for standard input.
-
-    Unlike :meth:`Document.load`, this also accepts ``"-"``, which is a
-    command-line convention (not a library one) for reading from stdin.
-    """
-    if source == "-":
-        return Document.from_text(source, sys.stdin.read())
-    return Document.load(source)
+def _read_stdin() -> str:
+    try:
+        return sys.stdin.read()
+    except UnicodeDecodeError as e:
+        raise SpdxValidateError(f"Cannot decode -: {e}") from e
 
 
 def iter_validation_errors(
@@ -110,7 +109,7 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         "-s",
         default="auto",
         choices=[v.pretty for v in SPDX_VERSIONS] + ["auto"],
-        help="SPDX Version to use, or 'auto' to determine version from input files",
+        help=("SPDX version to use, or 'auto' to determine version from input files"),
     )
     parser.add_argument(
         "--version",
@@ -130,11 +129,81 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Run quietly (do not show progress)",
     )
+    parser.add_argument(
+        "--model-dir",
+        help=(
+            "Directory with versioned models (v[VERSION]/spdx-json-schema.json, "
+            "spdx-model.ttl, spdx-context.jsonld) "
+            "(default: $SPDX3VALIDATE_MODEL_DIR)"
+        ),
+    )
+    parser.add_argument(
+        "--pre-release",
+        action="store_true",
+        default=None,
+        help="Treat the model as pre-release, overriding detection",
+    )
+    parser.add_argument(
+        "--no-pre-release",
+        action="store_false",
+        dest="pre_release",
+        help="Treat the model as stable, overriding detection",
+    )
+    parser.add_argument(
+        "--schema",
+        action="append",
+        help=(
+            "Location of JSON Schema for validation " "(only the first is used for now)"
+        ),
+    )
+    parser.add_argument(
+        "--shapes",
+        action="append",
+        help=(
+            "Location of RDF model containing SHACL shapes "
+            "(only the first is used for now)"
+        ),
+    )
+    parser.add_argument(
+        "--context",
+        action="append",
+        help="Location of JSON-LD @context (only the first is used for now)",
+    )
     args = parser.parse_args(cmdline_args)
 
-    current_version = None if args.spdx_version == "auto" else args.spdx_version
+    if args.schema and len(args.schema) > 1:
+        print(
+            "WARNING: Multiple --schema options are not supported yet. "
+            "Only the first one will be used.",
+            file=sys.stderr,
+        )
+    if args.shapes and len(args.shapes) > 1:
+        print(
+            "WARNING: Multiple --shapes options are not supported yet. "
+            "Only the first one will be used.",
+            file=sys.stderr,
+        )
+    if args.context and len(args.context) > 1:
+        print(
+            "WARNING: Multiple --context options are not supported yet. "
+            "Only the first one will be used.",
+            file=sys.stderr,
+        )
 
-    return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
+    current_version = None if args.spdx_version == "auto" else args.spdx_version
+    model_dir = args.model_dir or os.environ.get("SPDX3VALIDATE_MODEL_DIR")
+
+    return spdx3validate(
+        args.json,
+        current_version,
+        args.check_merged,
+        args.quiet,
+        schema_urls=args.schema[:1] if args.schema else None,
+        shacl_urls=args.shapes[:1] if args.shapes else None,
+        context_urls=args.context[:1] if args.context else None,
+        model_dir=model_dir,
+        pre_release=args.pre_release,
+    )
 
 
 def spdx3validate(
@@ -142,18 +211,31 @@ def spdx3validate(
     current_version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
     quiet: bool = True,
+    schema_urls: _Locations = None,
+    shacl_urls: _Locations = None,
+    context_urls: _Locations = None,
+    model_dir: Optional[str] = None,
+    pre_release: Optional[bool] = None,
 ) -> int:
     try:
         resolved_version = _resolve_version(current_version)
     except UnknownVersionError as e:
         print(str(e))
         return 1
+    validator = Validator(
+        resolved_version,
+        schema_urls=schema_urls,
+        shacl_urls=shacl_urls,
+        context_urls=context_urls,
+        model_dir=model_dir,
+        pre_release=pre_release,
+    )
 
     documents: List[Document] = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             try:
-                doc = load_cli_document(j)
+                doc = validator.load_document(j, _read_stdin() if j == "-" else None)
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
@@ -164,7 +246,8 @@ def spdx3validate(
             elif resolved_version != doc.version:
                 spinner.fail()
                 print(
-                    f"{j} has incompatible version {doc.version.pretty}. Other documents are {resolved_version.pretty}"
+                    f"{j} has incompatible version {doc.version.pretty}. "
+                    f"Other documents are {resolved_version.pretty}"
                 )
                 return 1
 
@@ -175,14 +258,31 @@ def spdx3validate(
         # Nothing to do
         return 0
 
-    # documents is non-empty, so the loop above set resolved_version at least once.
-    assert resolved_version is not None
+    if resolved_version is None:
+        print("ERROR: Unable to determine SPDX version")
+        return 1
 
     with halo.Halo(
         f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
     ) as spinner:
-        schema, shacl_graph = load_validation_data(resolved_version)
-        spinner.succeed()
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                validator.load(resolved_version)  # user warning filters apply
+            spinner.succeed()
+        except (SpdxValidateError, Warning) as e:  # Warning: -W error filters
+            spinner.fail()
+            print(str(e))
+            return 1
+
+    for w in caught:
+        if issubclass(w.category, PreReleaseWarning):
+            print(
+                f"WARNING: SPDX {resolved_version.pretty} model is marked "
+                "pre-release; it may change between runs",
+                file=sys.stderr,
+            )
+        else:
+            warnings.showwarning(w.message, w.category, w.filename, w.lineno)
 
     errors = 0
 
@@ -191,12 +291,11 @@ def spdx3validate(
             f"Validating schema for {doc.source}", enabled=not quiet
         ) as spinner:
             try:
-                validator = schema_validator(schema)
-            except jsonschema.exceptions.SchemaError as e:
-                spinner.fail(f"Invalid schema {resolved_version.schema_url}: {e}")
+                json_errors = validator._schema_errors(doc)
+            except SpdxValidateError as e:
+                spinner.fail()
+                print(str(e))
                 return 1
-
-            json_errors = list(validator.iter_errors(doc.data))
             if json_errors:
                 spinner.fail()
             else:
@@ -211,7 +310,12 @@ def spdx3validate(
         with halo.Halo(
             f"Checking SHACL for {doc.source}", enabled=not quiet
         ) as spinner:
-            graph_errors = check_graph(doc.graph, shacl_graph, resolved_version, True)
+            try:
+                graph_errors = validator._shacl_errors(doc.graph, True)
+            except SpdxValidateError as e:
+                spinner.fail()
+                print(str(e))
+                return 1
             if graph_errors:
                 spinner.fail()
             else:
@@ -229,9 +333,12 @@ def spdx3validate(
                 for doc in documents:
                     merged_g += doc.graph
 
-                graph_errors = check_graph(
-                    merged_g, shacl_graph, resolved_version, False
-                )
+                try:
+                    graph_errors = validator._shacl_errors(merged_g, False)
+                except SpdxValidateError as e:
+                    spinner.fail()
+                    print(str(e))
+                    return 1
                 if graph_errors:
                     spinner.fail()
                 else:
