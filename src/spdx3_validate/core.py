@@ -16,16 +16,18 @@ top of these primitives.
 from __future__ import annotations
 
 import json
+import os
 import textwrap
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import jsonschema
 import pyshacl
 import rdflib
-from rdflib import RDF, RDFS, SH, URIRef
+from rdflib import RDF, RDFS, SH, BNode, URIRef
 from rdflib.term import Node
 
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion, find_version
@@ -196,6 +198,95 @@ def derives_from(cls: Node, target: Node, shacl_graph: rdflib.Graph) -> bool:
     return False
 
 
+def merge_graphs(graphs: Iterable[rdflib.Graph]) -> rdflib.Graph:
+    """Return the RDF merge of *graphs*, keeping each graph's blank nodes apart.
+
+    A blank-node label is local to its document, so the same label (e.g.
+    ``_:CreationInfo0``) in two documents names two different nodes. Each
+    graph's blank nodes are renamed ``_:d<i>_<label>``, where *i* is the
+    graph's 0-based position, before its triples are added. Names cannot
+    collide because ``<i>`` holds no ``_``, and a label written in the
+    document (such as ``CreationInfo0``) stays readable in error messages.
+    IRIs are left as they are, so elements shared by ``spdxId`` still meet
+    across documents.
+    """
+    merged = rdflib.Graph()
+    for i, graph in enumerate(graphs):
+        prefix = f"d{i}_"
+
+        def rename(term: Node) -> Node:
+            return BNode(prefix + term) if isinstance(term, BNode) else term
+
+        for s, p, o in graph:
+            merged.add((rename(s), rename(p), rename(o)))
+    return merged
+
+
+def duplicate_definitions(
+    documents: Sequence[Document], shacl_graph: rdflib.Graph, version: SpdxVersion
+) -> List[str]:
+    """Report each Element ``spdxId`` that more than one document defines.
+
+    An Element is defined where it is a subject typed with a subclass of
+    ``Core/Element``. SPDX expects one definition per Element, with other
+    documents referring to it through an ``ExternalMap``; two definitions give
+    it two ``creationInfo`` values, which the merged SHACL check also rejects.
+    IRI-named non-Elements (such as a shared ``CreationInfo``) are not counted.
+    """
+    element = URIRef(version.rdf_base + "Core/Element")
+    defined_in: Dict[URIRef, List[str]] = {}
+    for doc in documents:
+        for subject in set(doc.graph.subjects(RDF.type, None)):
+            if isinstance(subject, URIRef) and any(
+                derives_from(cls, element, shacl_graph)
+                for cls in doc.graph.objects(subject, RDF.type)
+            ):
+                defined_in.setdefault(subject, []).append(doc.source)
+    return [
+        f"ERROR: {spdxid} is defined in more than one document "
+        f"({', '.join(sources)}); define it in one and import it in the others "
+        "with an ExternalMap"
+        for spdxid, sources in defined_in.items()
+        if len(sources) > 1
+    ]
+
+
+def _source_key(source: str) -> Tuple[str, ...]:
+    """Identify a source so the same document given twice is merged once."""
+    if source == "-":
+        return ("stdin",)
+    path = source
+    if source.startswith("file:"):
+        path = urllib.request.url2pathname(urllib.parse.urlparse(source).path)
+    elif "://" in source:
+        return ("url", source)
+    try:
+        st = os.stat(path)  # also matches hard links and case-insensitive names
+        return ("file", str(st.st_dev), str(st.st_ino))
+    except OSError:
+        return ("path", os.path.realpath(path))
+
+
+def merged_errors(
+    documents: Sequence[Document], shacl_graph: rdflib.Graph, version: SpdxVersion
+) -> List[str]:
+    """Validate the RDF merge of *documents*, returning error strings.
+
+    A source given more than once is merged once. Elements defined in more
+    than one document are reported first, then the SHACL results.
+    """
+    first: Dict[Tuple[str, ...], Document] = {}
+    for d in documents:
+        first.setdefault(_source_key(d.source), d)  # keeps input order
+    unique = list(first.values())
+    if len(unique) < 2:
+        return []
+    merged = merge_graphs(d.graph for d in unique)
+    return duplicate_definitions(unique, shacl_graph, version) + check_graph(
+        merged, shacl_graph, version, False
+    )
+
+
 def check_graph(
     graph: rdflib.Graph,
     shacl_graph: rdflib.Graph,
@@ -220,6 +311,21 @@ def check_graph(
     )
     conforms, results, _ = validate_result
 
+    # Collect all external map references
+    external_spdxids: set[str] = set()
+    # A document may list the same spdxId in several ExternalMaps; report once.
+    for spdxid in dict.fromkeys(current_version.get_imports(graph)):
+        # If the SpdxID is in the graph as a subject, than do
+        # not mark it as an external SpdxID, since there is a
+        # resolved definition for it
+        if (spdxid, None, None) in graph:
+            if error_external:
+                errors.append(
+                    f"ERROR: {str(spdxid)} in an ExternalMap and also defined in the document"
+                )
+        else:
+            external_spdxids.add(str(spdxid))
+
     if not conforms:
         results.bind("sh", SH)
         nm = rdflib.namespace.NamespaceManager(results)
@@ -232,20 +338,6 @@ def check_graph(
             if n:
                 return n.n3()
             return "-"
-
-        # Collect all external map references
-        external_spdxids: set[str] = set()
-        for spdxid in current_version.get_imports(graph):
-            # If the SpdxID is in the graph as a subject, than do
-            # not mark it as an external SpdxID, since there is a
-            # resolved definition for it
-            if (spdxid, None, None) in graph:
-                if error_external:
-                    errors.append(
-                        f"ERROR: {str(spdxid)} in an ExternalMap and also defined in the document"
-                    )
-            else:
-                external_spdxids.add(str(spdxid))
 
         def check_external_ref_error(r: Node) -> bool:
             if (r, RDF.type, SH.ValidationResult) not in results:
@@ -407,12 +499,9 @@ def validate(
         )
 
     if len(documents) > 1 and check_merged and not errors:
-        merged = rdflib.Graph()
-        for doc in documents:
-            merged += doc.graph
         errors.extend(
             ValidationError("(merged)", "shacl", msg)
-            for msg in check_graph(merged, shacl_graph, resolved_version, False)
+            for msg in merged_errors(documents, shacl_graph, resolved_version)
         )
 
     return ValidationResult(errors)

@@ -12,7 +12,8 @@ useful. This includes:
    in the document
 3. SHACL Validation of merged documents (in this way, if you reference an
    `spdxId` from an `ExternalMap` and then pass the document that provides that
-   `spdxId`, the type can be validated)
+   `spdxId`, the type can be validated). Blank nodes are kept apart per
+   document; `spdxId`s are shared
 4. (Hopefully) More useful JSON schema error output
 
 ## Installation
@@ -44,7 +45,10 @@ for error in result.errors:
 - The SPDX version is detected from each document's `@context`;
   pass `version="X.Y"` to force one.
 - Set `check_merged=True` to also validate the merged graph of several
-  documents together.
+  documents together. Blank nodes in its errors are prefixed with the
+  document's position: `_:d1_CreationInfo0` is `_:CreationInfo0` in the
+  second document. An Element `spdxId` defined in more than one
+  document is an error; import it with an `ExternalMap` instead.
 - A document that cannot be loaded (missing `@context`, unknown version,
   incompatible versions) raises `spdx3_validate.SpdxValidateError`.
 
