@@ -26,7 +26,9 @@ def get_3_0_0_imports(graph: Graph) -> Iterator[Node]:
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
         for i in graph.objects(doc, RDF_BASE + "Core/imports"):
             for spdxid in graph.objects(i, RDF_BASE + "Core/externalSpdxId"):
-                yield spdxid
+                # externalSpdxId is an xsd:anyURI literal; return the IRI
+                # it names so it can be matched against element subjects.
+                yield URIRef(str(spdxid))
 
 
 def get_3_0_1_imports(graph: Graph) -> Iterator[Node]:
@@ -35,7 +37,9 @@ def get_3_0_1_imports(graph: Graph) -> Iterator[Node]:
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
         for i in graph.objects(doc, RDF_BASE + "Core/import"):
             for spdxid in graph.objects(i, RDF_BASE + "Core/externalSpdxId"):
-                yield spdxid
+                # externalSpdxId is an xsd:anyURI literal; return the IRI
+                # it names so it can be matched against element subjects.
+                yield URIRef(str(spdxid))
 
 
 SPDX_VERSIONS = (

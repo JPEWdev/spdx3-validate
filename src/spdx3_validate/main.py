@@ -11,7 +11,6 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import halo
 import jsonschema
-import rdflib
 
 from .version import VERSION
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion
@@ -23,6 +22,7 @@ from .core import (
     load_validation_data,
     schema_validator,
     _resolve_version,
+    merged_errors,
 )
 
 
@@ -225,13 +225,7 @@ def spdx3validate(
     if len(documents) > 1 and check_merged:
         if not errors:
             with halo.Halo("Checking merged graph", enabled=not quiet) as spinner:
-                merged_g = rdflib.Graph()
-                for doc in documents:
-                    merged_g += doc.graph
-
-                graph_errors = check_graph(
-                    merged_g, shacl_graph, resolved_version, False
-                )
+                graph_errors = merged_errors(documents, shacl_graph, resolved_version)
                 if graph_errors:
                     spinner.fail()
                 else:
